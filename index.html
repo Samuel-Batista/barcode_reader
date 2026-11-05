@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Leitor de Código de Barras</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #191c23; --line: #2a2f3a; --text: #e8eaf0; --muted: #9aa1b1;
+    --accent: #3ddc84; --warn: #ffb020; --danger: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  #engine { font-size: 12px; color: var(--muted); }
+
+  #stage { position: relative; background: #000; aspect-ratio: 3 / 4; max-height: 62vh; width: 100%; overflow: hidden; touch-action: manipulation; }
+  #video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #frame { position: absolute; left: 10%; right: 10%; top: 35%; height: 30%;
+    border: 2px solid rgba(255,255,255,.85); border-radius: 12px; box-shadow: 0 0 0 9999px rgba(0,0,0,.35); pointer-events: none; transition: border-color .15s; }
+  #frame.hit { border-color: var(--accent); }
+  #laser { position: absolute; left: 4%; right: 4%; top: 50%; height: 2px; background: var(--danger); opacity: .8; animation: scan 1.6s ease-in-out infinite alternate; }
+  @keyframes scan { from { top: 10%; } to { top: 90%; } }
+  #focusRing { position: absolute; width: 70px; height: 70px; margin: -35px 0 0 -35px; border: 2px solid var(--warn); border-radius: 50%; opacity: 0; pointer-events: none; transition: opacity .3s; }
+  #status { position: absolute; left: 0; right: 0; bottom: 0; padding: 8px 12px; font-size: 13px; background: linear-gradient(transparent, rgba(0,0,0,.7)); }
+  #startOverlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; background: #000; text-align: center; padding: 16px; }
+
+  .bar { display: flex; gap: 8px; padding: 12px 16px; flex-wrap: wrap; }
+  button, select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; min-height: 44px; }
+  button:disabled, select:disabled { opacity: .4; }
+  button.primary { background: var(--accent); color: #062; border-color: var(--accent); font-weight: 600; }
+  button.on { background: var(--warn); color: #000; border-color: var(--warn); }
+  select { flex: 1; min-width: 0; }
+  .grow { flex: 1; }
+
+  .controls { padding: 0 16px 8px; display: grid; gap: 12px; }
+  .ctrl { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .ctrl label { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .ctrl input[type=range] { width: 100%; }
+  .seg { display: flex; gap: 6px; }
+  .seg button { flex: 1; padding: 8px 6px; font-size: 13px; min-height: 38px; }
+  .seg button.active { background: var(--accent); color: #062; border-color: var(--accent); }
+  .hidden { display: none !important; }
+
+  #result { margin: 4px 16px 12px; padding: 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+  #result .code { font-size: 20px; font-weight: 600; word-break: break-all; }
+  #result .fmt { font-size: 12px; color: var(--muted); }
+  h2 { font-size: 14px; color: var(--muted); margin: 8px 16px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  h2 button { padding: 4px 10px; min-height: 0; font-size: 12px; }
+  #history { list-style: none; margin: 0 16px 24px; padding: 0; }
+  #history li { display: flex; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  #history .t { word-break: break-all; }
+  #history .m { font-size: 12px; color: var(--muted); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Leitor de Código de Barras</h1>
+  <span id="engine"></span>
+</header>
+
+<div id="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <div id="frame"><div id="laser"></div></div>
+  <div id="focusRing"></div>
+  <div id="status">Câmera desligada</div>
+  <div id="startOverlay">
+    <button id="startBtn" class="primary">Iniciar câmera</button>
+    <small style="color:var(--muted)">Toque no vídeo para focar</small>
+  </div>
+</div>
+
+<div class="bar">
+  <button id="torchBtn" disabled>🔦 Lanterna</button>
+  <select id="cameraSel" disabled></select>
+  <button id="stopBtn" disabled>Parar</button>
+</div>
+
+<div class="controls">
+  <div class="ctrl hidden" id="focusModeCtrl">
+    <label><span>Modo de foco</span><span id="focusModeLbl"></span></label>
+    <div class="seg" id="focusModes"></div>
+  </div>
+  <div class="ctrl hidden" id="focusDistCtrl">
+    <label><span>Distância de foco (manual)</span><span id="focusDistVal"></span></label>
+    <input type="range" id="focusDist">
+  </div>
+  <div class="ctrl hidden" id="zoomCtrl">
+    <label><span>Zoom</span><span id="zoomVal"></span></label>
+    <input type="range" id="zoom">
+  </div>
+  <div class="ctrl hidden" id="noCtrl" style="color:var(--muted);font-size:13px"></div>
+</div>
+
+<div id="result" class="hidden">
+  <div class="fmt" id="resFmt"></div>
+  <div class="code" id="resCode"></div>
+  <div class="bar" style="padding:8px 0 0">
+    <button id="copyBtn" class="grow">Copiar</button>
+    <button id="continueBtn" class="grow primary">Ler próximo</button>
+  </div>
+</div>
+
+<h2>Histórico <button id="clearBtn">Limpar</button></h2>
+<ul id="history"></ul>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const video = $('video'), statusEl = $('status');
+  const FORMATS = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','code_93','codabar','itf','qr_code','data_matrix','pdf417','aztec'];
+
+  let stream = null, track = null, caps = {}, torchOn = false;
+  let detector = null, zxing = null, scanning = false, paused = false;
+  let lastCode = '', lastTime = 0;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  };
+  const setStatus = t => statusEl.textContent = t;
+
+  // ---------- Motor de decodificação ----------
+  async function initDecoder() {
+    if ('BarcodeDetector' in window) {
+      try {
+        const supported = await BarcodeDetector.getSupportedFormats();
+        const fmts = FORMATS.filter(f => supported.includes(f));
+        if (fmts.length) {
+          detector = new BarcodeDetector({ formats: fmts });
+          $('engine').textContent = 'Nativo (BarcodeDetector)';
+          return;
+        }
+      } catch {}
+    }
+    await loadScript('https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js');
+    const Z = window.ZXing;
+    const hints = new Map();
+    hints.set(Z.DecodeHintType.TRY_HARDER, true);
+    zxing = { Z, reader: new Z.MultiFormatReader(), hints };
+    zxing.reader.setHints(hints);
+    $('engine').textContent = 'ZXing (JS)';
+  }
+
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = src; s.onload = res; s.onerror = () => rej(new Error('Falha ao carregar ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  // Recorta a área da moldura (com margem) para acelerar a leitura
+  function grabRegion() {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return false;
+    const cropW = Math.round(vw * 0.9), cropH = Math.round(vh * 0.5);
+    const sx = Math.round((vw - cropW) / 2), sy = Math.round((vh - cropH) / 2);
+    const scale = Math.min(1, 1280 / cropW);
+    canvas.width = Math.round(cropW * scale); canvas.height = Math.round(cropH * scale);
+    ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, canvas.width, canvas.height);
+    return true;
+  }
+
+  async function decodeFrame() {
+    if (detector) {
+      const codes = await detector.detect(video);
+      if (codes.length) return { text: codes[0].rawValue, format: codes[0].format };
+      return null;
+    }
+    if (!grabRegion()) return null;
+    const { Z, reader, hints } = zxing;
+    const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
+    try {
+      const r = reader.decode(bitmap, hints);
+      return { text: r.getText(), format: Z.BarcodeFormat[r.getBarcodeFormat()] || '' };
+    } catch { return null; }
+  }
+
+  async function loop() {
+    if (!scanning) return;
+    if (!paused && video.readyState >= 2) {
+      try {
+        const r = await decodeFrame();
+        if (r && r.text) onCode(r);
+      } catch (e) { console.warn(e); }
+    }
+    setTimeout(loop, detector ? 80 : 150);
+  }
+
+  function onCode({ text, format }) {
+    const now = Date.now();
+    if (text === lastCode && now - lastTime < 2500) return;
+    lastCode = text; lastTime = now;
+    paused = true;
+    $('frame').classList.add('hit');
+    beep(); if (navigator.vibrate) navigator.vibrate(80);
+    $('resCode').textContent = text;
+    $('resFmt').textContent = String(format).toUpperCase().replace(/_/g, '-');
+    $('result').classList.remove('hidden');
+    setStatus('Código lido ✔');
+    addHistory(text, format);
+  }
+
+  let audioCtx;
+  function beep() {
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 1800; g.gain.value = 0.15;
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + 0.09);
+    } catch {}
+  }
+
+  // ---------- Câmera ----------
+  async function startCamera(deviceId) {
+    stopCamera(false);
+    const video_c = deviceId
+      ? { deviceId: { exact: deviceId } }
+      : { facingMode: { ideal: 'environment' } };
+    Object.assign(video_c, { width: { ideal: 1920 }, height: { ideal: 1080 } });
+    setStatus('Abrindo câmera…');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: video_c, audio: false });
+    } catch (e) {
+      setStatus('Erro ao abrir câmera: ' + e.name);
+      if (deviceId) { store.set('cameraId', null); }
+      throw e;
+    }
+    track = stream.getVideoTracks()[0];
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    $('startOverlay').classList.add('hidden');
+    $('stopBtn').disabled = false;
+
+    const settings = track.getSettings ? track.getSettings() : {};
+    if (settings.deviceId) store.set('cameraId', settings.deviceId);
+    await listCameras(settings.deviceId);
+
+    // Alguns aparelhos só expõem capacidades depois do primeiro frame
+    await new Promise(r => setTimeout(r, 400));
+    setupControls();
+
+    scanning = true; paused = false;
+    setStatus('Aponte para o código de barras');
+    loop();
+  }
+
+  function stopCamera(updateUi = true) {
+    scanning = false;
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = null; track = null; torchOn = false;
+    if (updateUi) {
+      video.srcObject = null;
+      $('startOverlay').classList.remove('hidden');
+      $('stopBtn').disabled = true; $('torchBtn').disabled = true;
+      $('torchBtn').classList.remove('on');
+      ['focusModeCtrl','focusDistCtrl','zoomCtrl','noCtrl'].forEach(id => $(id).classList.add('hidden'));
+      setStatus('Câmera desligada');
+    }
+  }
+
+  async function listCameras(currentId) {
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    const sel = $('cameraSel');
+    sel.innerHTML = '';
+    devices.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId; o.textContent = d.label || ('Câmera ' + (i + 1));
+      if (d.deviceId === currentId) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.disabled = devices.length < 2;
+  }
+
+  // ---------- Foco / Lanterna / Zoom ----------
+  async function apply(c) {
+    if (!track) return false;
+    try { await track.applyConstraints({ advanced: [c] }); return true; }
+    catch (e) { console.warn('applyConstraints', c, e); return false; }
+  }
+
+  function setupControls() {
+    caps = track.getCapabilities ? track.getCapabilities() : {};
+    const st = track.getSettings ? track.getSettings() : {};
+    const missing = [];
+
+    // Lanterna
+    const torchBtn = $('torchBtn');
+    if (caps.torch) { torchBtn.disabled = false; }
+    else { torchBtn.disabled = true; missing.push('lanterna'); }
+
+    // Modo de foco
+    const modes = caps.focusMode || [];
+    const box = $('focusModes'); box.innerHTML = '';
+    if (modes.length) {
+      const names = { continuous: 'Contínuo', 'single-shot': 'Único', manual: 'Manual', none: 'Nenhum' };
+      modes.forEach(m => {
+        const b = document.createElement('button');
+        b.textContent = names[m] || m; b.dataset.mode = m;
+        b.onclick = () => setFocusMode(m);
+        box.appendChild(b);
+      });
+      $('focusModeCtrl').classList.remove('hidden');
+      const initial = modes.includes('continuous') ? 'continuous' : (st.focusMode || modes[0]);
+      setFocusMode(initial);
+    } else missing.push('modo de foco');
+
+    // Distância de foco
+    if (caps.focusDistance) {
+      const r = $('focusDist'), fd = caps.focusDistance;
+      r.min = fd.min; r.max = fd.max; r.step = fd.step || (fd.max - fd.min) / 100;
+      r.value = st.focusDistance ?? fd.min;
+      $('focusDistVal').textContent = Number(r.value).toFixed(2);
+    } else missing.push('foco manual');
+
+    // Zoom
+    if (caps.zoom) {
+      const r = $('zoom'), z = caps.zoom;
+      r.min = z.min; r.max = z.max; r.step = z.step || 0.1;
+      r.value = st.zoom ?? z.min;
+      $('zoomVal').textContent = Number(r.value).toFixed(1) + 'x';
+      $('zoomCtrl').classList.remove('hidden');
+    }
+
+    const nc = $('noCtrl');
+    if (missing.length) {
+      nc.textContent = 'Esta câmera/navegador não expõe: ' + missing.join(', ') +
+        '. Tente outra câmera na lista acima (em celulares com várias lentes, a principal costuma ter foco) ou use o Chrome no Android.';
+      nc.classList.remove('hidden');
+    } else nc.classList.add('hidden');
+  }
+
+  async function setFocusMode(m) {
+    const extra = {};
+    if (m === 'manual' && caps.focusDistance) extra.focusDistance = Number($('focusDist').value);
+    await apply({ focusMode: m, ...extra });
+    [...$('focusModes').children].forEach(b => b.classList.toggle('active', b.dataset.mode === m));
+    $('focusModeLbl').textContent = (track.getSettings().focusMode || m);
+    $('focusDistCtrl').classList.toggle('hidden', !(m === 'manual' && caps.focusDistance));
+    store.set('focusMode', m);
+  }
+
+  $('focusDist').addEventListener('input', async e => {
+    const v = Number(e.target.value);
+    $('focusDistVal').textContent = v.toFixed(2);
+    await apply({ focusMode: 'manual', focusDistance: v });
+  });
+
+  $('zoom').addEventListener('input', async e => {
+    const v = Number(e.target.value);
+    $('zoomVal').textContent = v.toFixed(1) + 'x';
+    await apply({ zoom: v });
+  });
+
+  $('torchBtn').addEventListener('click', async () => {
+    const want = !torchOn;
+    if (await apply({ torch: want })) {
+      torchOn = want;
+      $('torchBtn').classList.toggle('on', torchOn);
+    } else setStatus('Não foi possível alternar a lanterna');
+  });
+
+  // Toque para focar
+  $('stage').addEventListener('click', async e => {
+    if (!track || e.target.closest('#startOverlay')) return;
+    const rect = $('stage').getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width, y = (e.clientY - rect.top) / rect.height;
+    const ring = $('focusRing');
+    ring.style.left = (x * 100) + '%'; ring.style.top = (y * 100) + '%';
+    ring.style.opacity = 1; setTimeout(() => ring.style.opacity = 0, 700);
+
+    const modes = caps.focusMode || [];
+    const c = {};
+    if (caps.pointsOfInterest !== undefined) c.pointsOfInterest = [{ x, y }];
+    if (modes.includes('single-shot')) {
+      await apply({ ...c, focusMode: 'single-shot' });
+      // volta para o modo escolhido após o refoco
+      const back = store.get('focusMode', 'continuous');
+      if (back !== 'single-shot' && modes.includes(back)) setTimeout(() => setFocusMode(back), 1200);
+    } else if (modes.includes('continuous')) {
+      // força refoco reaplicando o modo contínuo
+      if (modes.includes('manual')) await apply({ focusMode: 'manual' });
+      await apply({ ...c, focusMode: 'continuous' });
+    } else if (c.pointsOfInterest) {
+      await apply(c);
+    }
+  });
+
+  // ---------- UI ----------
+  $('startBtn').addEventListener('click', async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setStatus('Câmera indisponível. Abra a página via HTTPS (ou localhost).');
+      return;
+    }
+    try {
+      if (!detector && !zxing) { setStatus('Carregando leitor…'); await initDecoder(); }
+      const saved = store.get('cameraId', null);
+      try { await startCamera(saved); }
+      catch { if (saved) await startCamera(null); }
+    } catch (e) {
+      setStatus('Erro: ' + (e.message || e.name));
+    }
+  });
+  $('stopBtn').addEventListener('click', () => stopCamera());
+  $('cameraSel').addEventListener('change', e => startCamera(e.target.value).catch(() => {}));
+
+  $('continueBtn').addEventListener('click', () => {
+    $('result').classList.add('hidden');
+    $('frame').classList.remove('hit');
+    paused = false; lastCode = '';
+    setStatus('Aponte para o código de barras');
+  });
+  $('copyBtn').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('resCode').textContent); setStatus('Copiado'); }
+    catch { setStatus('Não foi possível copiar'); }
+  });
+
+  // Histórico
+  function renderHistory() {
+    const list = store.get('history', []), ul = $('history');
+    ul.innerHTML = '';
+    list.forEach(h => {
+      const li = document.createElement('li');
+      const t = document.createElement('span'); t.className = 't'; t.textContent = h.text;
+      const m = document.createElement('span'); m.className = 'm';
+      m.textContent = String(h.format).toUpperCase().replace(/_/g, '-') + ' · ' + new Date(h.at).toLocaleTimeString();
+      li.append(t, m); ul.appendChild(li);
+    });
+  }
+  function addHistory(text, format) {
+    const list = store.get('history', []);
+    list.unshift({ text, format, at: Date.now() });
+    store.set('history', list.slice(0, 50));
+    renderHistory();
+  }
+  $('clearBtn').addEventListener('click', () => { store.set('history', []); renderHistory(); });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && stream) stopCamera();
+  });
+
+  renderHistory();
+})();
+</script>
+</body>
+</html>

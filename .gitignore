@@ -1,0 +1,4 @@
+# Certificado local (só para testes na rede) — nunca publicar
+cert/
+*.pfx
+.claude/
